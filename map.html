@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MTR 統合運行マップ v4.2</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; background-color: #121212; }
+        #map { height: 100vh; width: 100vw; background-color: #1a1a1a; background-image: linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px); background-size: 100px 100px; }
+        
+        .info-panel {
+            position: absolute; top: 10px; left: 10px; z-index: 1000;
+            background: rgba(30, 30, 30, 0.9); color: white; padding: 12px 15px;
+            border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+            min-width: 260px; border: 1px solid #444; backdrop-filter: blur(8px);
+            font-size: 0.9em;
+        }
+        .info-panel h3 { margin: 0 0 10px 0; font-size: 1.1em; border-bottom: 1px solid #555; padding-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+        .info-panel p { margin: 4px 0; color: #ccc; }
+        .stat-value { color: #4a90e2; font-weight: bold; font-size: 1.1em; }
+        
+        #search-container { margin-top: 10px; position: relative; display: flex; align-items: center; }
+        #search-box {
+            width: 100%; padding: 8px 30px 8px 10px; background: #222;
+            border: 1px solid #555; border-radius: 4px; color: white;
+            font-size: 0.9em; box-sizing: border-box; transition: border-color 0.2s;
+        }
+        #search-box:focus { outline: none; border-color: #4a90e2; }
+        #search-box::placeholder { color: #777; }
+        
+        #clear-search {
+            position: absolute; right: 8px; background: none; border: none;
+            color: #aaa; font-size: 1.1em; cursor: pointer; display: none; padding: 0 4px;
+        }
+        #clear-search:hover { color: white; }
+        
+        #search-status { font-size: 0.8em; color: #4a90e2; margin-top: 4px; min-height: 1.2em; }
+
+        .legend { margin-top: 10px; font-size: 0.85em; line-height: 1.6; }
+        .legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .dot-moving { background-color: #44ff44; box-shadow: 0 0 6px #44ff44; }
+        .dot-stopped { background-color: #ff4444; box-shadow: 0 0 6px #ff4444; }
+        .dot-depot { background-color: #888888; box-shadow: 0 0 6px #888888; }
+        .dot-station { background-color: #ffffff; border: 2px solid #4a90e2; width: 8px; height: 8px; }
+
+        .leaflet-popup-content-wrapper { background: rgba(30, 30, 30, 0.95); color: white; border: 1px solid #555; border-radius: 6px; }
+        .leaflet-popup-tip { background: rgba(30, 30, 30, 0.95); }
+        .leaflet-popup-content { margin: 10px 14px; line-height: 1.5; font-size: 0.9em; }
+        .popup-title { font-size: 1.05em; font-weight: bold; margin-bottom: 6px; color: #4a90e2; }
+        .popup-row { display: flex; justify-content: space-between; margin-bottom: 3px; }
+        .popup-label { color: #aaa; }
+        
+        .loading-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(18, 18, 18, 0.95); z-index: 2000;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            color: white; font-size: 1.1em;
+        }
+        .spinner {
+            width: 36px; height: 36px; border: 3px solid #333;
+            border-top: 3px solid #4a90e2; border-radius: 50%;
+            animation: spin 0.8s linear infinite; margin-bottom: 12px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="loading-overlay" id="loading">
+        <div class="spinner"></div>
+        <div>路線データを読み込み中...</div>
+    </div>
+
+    <div class="info-panel">
+        <h3>🚇 MTR 運行マップ v4.2</h3>
+        <p>更新: <span id="last-updated" class="stat-value">-</span></p>
+        <p>列車: <span id="train-count" class="stat-value">0</span> 両 / 路線: <span id="route-count" class="stat-value">0</span> / 駅: <span id="station-count" class="stat-value">0</span></p>
+        
+        <div id="search-container">
+            <input type="text" id="search-box" placeholder="路線名、車両タイプ、駅名で検索...">
+            <button id="clear-search">✕</button>
+        </div>
+        <div id="search-status"></div>
+
+        <div class="legend">
+            <div class="legend-item"><span class="dot dot-station"></span> 駅 (検索ヒットで黄色)</div>
+            <div class="legend-item"><span class="dot dot-moving"></span> 走行中</div>
+            <div class="legend-item"><span class="dot dot-stopped"></span> 停車中</div>
+            <div class="legend-item"><span class="dot dot-depot"></span> 車庫内</div>
+        </div>
+    </div>
+
+    <script>
+        const map = L.map('map', {
+            crs: L.CRS.Simple,
+            minZoom: -6, maxZoom: 4, zoomSnap: 0.1, zoomDelta: 0.25,
+            wheelPxPerZoomLevel: 150, preferCanvas: true
+        });
+
+        const API_DATA = 'http://59.168.227.236:8888/data';
+        const API_TRAINS = 'http://59.168.227.236:8888/trains';
+
+        const UI = {
+            lastUpdated: document.getElementById('last-updated'),
+            trainCount: document.getElementById('train-count'),
+            routeCount: document.getElementById('route-count'),
+            stationCount: document.getElementById('station-count'),
+            searchStatus: document.getElementById('search-status'),
+            loading: document.getElementById('loading'),
+            searchBox: document.getElementById('search-box'),
+            clearBtn: document.getElementById('clear-search')
+        };
+
+        const trainMarkers = {};
+        const iconCache = {};
+        let isDataLoaded = false;
+        let allTrainData = []; 
+
+        const routesLayerGroup = L.layerGroup().addTo(map);
+        const stationsLayerGroup = L.layerGroup().addTo(map);
+        const routeIdToName = {};
+        const routeIdToInfo = {}; // routeId -> route info mapping
+
+        let debounceTimer;
+
+        UI.searchBox.addEventListener('input', (e) => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                applyFilter(e.target.value.trim());
+                UI.clearBtn.style.display = e.target.value ? 'block' : 'none';
+            }, 300);
+        });
+
+        UI.clearBtn.addEventListener('click', () => {
+            UI.searchBox.value = '';
+            UI.clearBtn.style.display = 'none';
+            applyFilter('');
+            UI.searchBox.focus();
+        });
+
+        function decToHexColor(dec) {
+            let hex = Number(dec).toString(16);
+            while (hex.length < 6) hex = "0" + hex;
+            return "#" + hex;
+        }
+
+        function extractStationId(combinedId) {
+            return combinedId.split('_')[0];
+        }
+
+        function applyFilter(query) {
+            const lowerQuery = query.toLowerCase();
+            const isFiltering = query.length > 0;
+            
+            let matchedStation = null;
+            const visibleRouteIds = new Set();
+            let visibleTrainCount = 0;
+            
+            stationsLayerGroup.eachLayer(layer => {
+                const name = layer.stationName || '';
+                if (isFiltering && name.toLowerCase().includes(lowerQuery)) {
+                    layer.setStyle({ radius: 8, weight: 3, fillColor: '#ffeb3b', color: '#ffeb3b' });
+                    if (!matchedStation) matchedStation = layer.getLatLng();
+                } else {
+                    layer.setStyle({ radius: 4, weight: 2, fillColor: '#ffffff', color: layer.defaultColor });
+                }
+            });
+            
+            allTrainData.forEach(train => {
+                const routeInfo = routeIdToInfo[train.routeId];
+                const routeName = routeInfo ? routeInfo.name : '';
+                const isMatch = !isFiltering || 
+                                train.trainTypeId.toLowerCase().includes(lowerQuery) || 
+                                routeName.toLowerCase().includes(lowerQuery);
+                
+                const marker = trainMarkers[train.id];
+                if (marker) {
+                    if (isMatch) {
+                        if (!map.hasLayer(marker)) map.addLayer(marker);
+                        if (routeInfo) visibleRouteIds.add(routeInfo.id);
+                        visibleTrainCount++;
+                    } else {
+                        if (map.hasLayer(marker)) map.removeLayer(marker);
+                    }
+                }
+            });
+            
+            routesLayerGroup.eachLayer(layer => {
+                const rId = layer.routeId;
+                if (!isFiltering) {
+                    layer.setStyle({ opacity: 0.8, weight: 3 });
+                } else if (visibleRouteIds.has(rId)) {
+                    layer.setStyle({ opacity: 1.0, weight: 5 });
+                } else {
+                    layer.setStyle({ opacity: 0.1, weight: 2 });
+                }
+            });
+            
+            if (isFiltering) {
+                UI.searchStatus.textContent = `ヒット: ${visibleTrainCount}両`;
+                if (matchedStation) {
+                    map.flyTo(matchedStation, Math.max(map.getZoom(), 2), { duration: 0.8 });
+                }
+            } else {
+                UI.searchStatus.textContent = '';
+            }
+        }
+
+        // 【改善点1】assetsフォルダから画像を読み込む
+        function getTrainIcon(trainTypeId, isDoorOpen, isOnRoute) {
+            const status = iconCache[trainTypeId];
+            if (status === 'image') return createImageIcon(trainTypeId.replace(/^mtr_custom_train_/, '') + '.png', isOnRoute);
+            if (status === 'dot' || status === 'loading') return createDotIcon(isDoorOpen ? '#ff4444' : (isOnRoute ? '#44ff44' : '#888888'));
+
+            iconCache[trainTypeId] = 'loading';
+            // 【改善点1】assetsフォルダを指定
+            const iconName = trainTypeId.replace(/^mtr_custom_train_/, '') + '.png';
+            const img = new Image();
+            img.onload = () => { iconCache[trainTypeId] = 'image'; updateTrainIconsByType(trainTypeId); };
+            img.onerror = () => { iconCache[trainTypeId] = 'dot'; updateTrainIconsByType(trainTypeId); };
+            img.src = 'assets/' + iconName; // assetsフォルダから読み込み
+            return createDotIcon(isDoorOpen ? '#ffaa00' : (isOnRoute ? '#aaff00' : '#aaaaaa'));
+        }
+
+        function updateTrainIconsByType(trainTypeId) {
+            for (const id in trainMarkers) {
+                const marker = trainMarkers[id];
+                if (marker.trainData && marker.trainData.trainTypeId === trainTypeId) {
+                    const isDoorOpen = marker.trainData.doorValue > 0;
+                    const isOnRoute = marker.trainData.isOnRoute;
+                    marker.setIcon(getTrainIcon(trainTypeId, isDoorOpen, isOnRoute));
+                }
+            }
+        }
+
+        function createImageIcon(url, isOnRoute) {
+            const opacity = isOnRoute ? 1.0 : 0.5; // 車庫内は半透明
+            return L.icon({ 
+                iconUrl: 'assets/' + url, // assetsフォルダを指定
+                iconSize: [24, 24], 
+                iconAnchor: [12, 12],
+                className: isOnRoute ? '' : 'depot-train'
+            });
+        }
+
+        function createDotIcon(color) {
+            return L.divIcon({
+                className: 'train-marker',
+                html: `<div style="background-color: ${color}; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 6px ${color};"></div>`,
+                iconSize: [16, 16], iconAnchor: [8, 8]
+            });
+        }
+
+        async function loadMapData() {
+            try {
+                const response = await fetch(API_DATA);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+
+                const worldData = data[0] || {};
+                const routes = worldData.routes || [];
+                const positions = worldData.positions || {};
+                const stationsInfo = worldData.stations || {};
+
+                let totalStations = 0;
+                let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+                const canvasRenderer = L.canvas({ padding: 0.5 });
+
+                routes.forEach(route => {
+                    const colorHex = decToHexColor(route.color);
+                    // routeIdはnameで一意に識別（実際にはroute.idがあるはずだが、data構造からnameを使用）
+                    routeIdToName[route.name] = route.name;
+                    routeIdToInfo[route.name] = {
+                        id: route.name,
+                        name: route.name,
+                        number: route.number || '',
+                        type: route.type || '',
+                        color: colorHex
+                    };
+                    
+                    const latlngs = [];
+
+                    route.stations.forEach((combinedId) => {
+                        const pos = positions[combinedId];
+                        if (pos) {
+                            const lat = -pos.y; 
+                            const lng = pos.x;
+                            latlngs.push([lat, lng]);
+
+                            if (lat < minLat) minLat = lat;
+                            if (lat > maxLat) maxLat = lat;
+                            if (lng < minLng) minLng = lng;
+                            if (lng > maxLng) maxLng = lng;
+
+                            const stationId = extractStationId(combinedId);
+                            const sInfo = stationsInfo[stationId] || {};
+                            
+                            if (!stationsLayerGroup.getLayers().some(l => l.stationId === combinedId)) {
+                                const popupContent = `
+                                    <div class="popup-title">${sInfo.name || '不明な駅'}</div>
+                                    <div class="popup-row"><span class="popup-label">ゾーン:</span> <span>${sInfo.zone || '-'}</span></div>
+                                    <div class="popup-row"><span class="popup-label">座標:</span> <span>X: ${pos.x}, Z: ${pos.y}</span></div>
+                                `;
+                                
+                                const marker = L.circleMarker([lat, lng], {
+                                    renderer: canvasRenderer, radius: 4, fillColor: '#ffffff',
+                                    color: colorHex, weight: 2, opacity: 1, fillOpacity: 1
+                                }).bindPopup(popupContent);
+                                
+                                marker.stationId = combinedId;
+                                marker.stationName = sInfo.name || '';
+                                marker.defaultColor = colorHex;
+                                stationsLayerGroup.addLayer(marker);
+                                
+                                totalStations++;
+                            }
+                        }
+                    });
+
+                    if (latlngs.length > 1) {
+                        const line = L.polyline(latlngs, {
+                            renderer: canvasRenderer, color: colorHex, weight: 3, opacity: 0.8, lineJoin: 'round'
+                        }).bindPopup(`<b>${route.name}</b><br>${route.number || ''}`);
+                        line.routeId = route.name; 
+                        routesLayerGroup.addLayer(line);
+                    }
+                });
+
+                UI.routeCount.textContent = routes.length;
+                UI.stationCount.textContent = totalStations;
+                
+                if (minLat !== Infinity) {
+                    map.fitBounds([[minLat - 500, minLng - 500], [maxLat + 500, maxLng + 500]]);
+                }
+
+                isDataLoaded = true;
+                UI.loading.style.display = 'none';
+
+            } catch (error) {
+                console.error('データ取得エラー:', error);
+                UI.loading.innerHTML = `<div style="color:#ff4444">データ取得に失敗しました<br><small>${error.message}</small></div>`;
+            }
+        }
+
+        async function updateTrains() {
+            if (!isDataLoaded) return;
+
+            try {
+                const response = await fetch(API_TRAINS);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const trains = await response.json();
+                allTrainData = trains; 
+
+                UI.trainCount.textContent = trains.length;
+                UI.lastUpdated.textContent = new Date().toLocaleTimeString();
+
+                const currentTrainIds = new Set(trains.map(t => t.id));
+
+                for (const id in trainMarkers) {
+                    if (!currentTrainIds.has(id)) {
+                        map.removeLayer(trainMarkers[id]);
+                        delete trainMarkers[id];
+                    }
+                }
+
+                const currentQuery = UI.searchBox.value.trim();
+
+                trains.forEach(train => {
+                    const lat = -train.z;
+                    const lng = train.x;
+                    const isDoorOpen = train.doorValue > 0;
+                    // 【改善点2】isOnRouteをチェック
+                    const isOnRoute = train.isOnRoute;
+                    
+                    // 【改善点3】routeIdから路線情報を取得
+                    const routeInfo = routeIdToInfo[train.routeId];
+                    const routeName = routeInfo ? routeInfo.name : '不明な路線';
+                    const routeNumber = routeInfo ? routeInfo.number : '';
+                    const routeType = routeInfo ? routeInfo.type : '';
+                    
+                    const nextStation = train.stations ? train.stations.find(s => s.index === train.nextStoppingIndex) : null;
+                    const nextStationInfo = nextStation ? `Index ${nextStation.index}` : '不明';
+
+                    // 【改善点2】状態表示の修正
+                    let statusText, statusColor;
+                    if (!isOnRoute) {
+                        statusText = '車庫内';
+                        statusColor = '#888888';
+                    } else if (isDoorOpen) {
+                        statusText = '停車中';
+                        statusColor = '#ff4444';
+                    } else {
+                        statusText = '走行中';
+                        statusColor = '#44ff44';
+                    }
+
+                    const popupContent = `
+                        <div class="popup-title">🚇 列車 ...${train.id.toString().slice(-6)}</div>
+                        <div class="popup-row"><span class="popup-label">路線:</span> <span>${routeName} ${routeNumber ? '(' + routeNumber + ')' : ''}</span></div>
+                        <div class="popup-row"><span class="popup-label">種別:</span> <span>${routeType}</span></div>
+                        <div class="popup-row"><span class="popup-label">車両:</span> <span>${train.trainTypeId}</span></div>
+                        <div class="popup-row"><span class="popup-label">速度:</span> <span>${train.speed.toFixed(2)}</span></div>
+                        <div class="popup-row"><span class="popup-label">状態:</span> <span style="color: ${statusColor}; font-weight: bold;">${statusText}</span></div>
+                        <div class="popup-row"><span class="popup-label">次駅:</span> <span>${nextStationInfo}</span></div>
+                    `;
+
+                    const icon = getTrainIcon(train.trainTypeId, isDoorOpen, isOnRoute);
+
+                    if (trainMarkers[train.id]) {
+                        trainMarkers[train.id].setLatLng([lat, lng]);
+                        trainMarkers[train.id].setPopupContent(popupContent);
+                        trainMarkers[train.id].setIcon(icon);
+                        trainMarkers[train.id].trainData = train;
+                    } else {
+                        const marker = L.marker([lat, lng], { icon, opacity: isOnRoute ? 1.0 : 0.6 })
+                            .bindPopup(popupContent)
+                            .addTo(map);
+                        marker.trainData = train;
+                        trainMarkers[train.id] = marker;
+                    }
+                });
+
+                if (currentQuery) {
+                    applyFilter(currentQuery);
+                }
+
+            } catch (error) {
+                console.error('列車データ取得エラー:', error);
+            }
+        }
+
+        loadMapData().then(() => {
+            updateTrains();
+            setInterval(updateTrains, 2000);
+        });
+    </script>
+</body>
+</html>
